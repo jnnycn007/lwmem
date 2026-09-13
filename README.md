@@ -8,13 +8,16 @@
 * Implements standard C library functions for memory allocation, malloc, calloc, realloc and free
 * Uses *first-fit* algorithm to search for free block
 * Supports multiple allocation instances to split between memories and/or CPU cores
-* Supports different memory regions to allow use of fragmented memories
+* Supports different memory regions, ideal for use with fragmented or embedded memories
 * Highly configurable for memory allocation and reallocation
-* Supports embedded applications with fragmented memories
 * Supports automotive applications
 * Supports advanced free/realloc algorithms to optimize memory usage
-* **Since v2.2.0** Supports light implementation with allocation only
-* Operating system ready, thread-safe API
+* Supports light implementation with allocation only
+* Optional runtime allocation statistics: used/free/minimum-ever-free bytes and alloc/free counts
+* Safe free and realloc variants that null the caller's pointer after the operation
+* Optional memory wipe on free/realloc for security-sensitive applications
+* Query the usable size of an allocated block at runtime
+* Operating system ready, thread-safe API, with ready-made ports for CMSIS-OS, pthreads, ThreadX and Win32
 * C++ wrapper functions
 * User friendly MIT license
 
