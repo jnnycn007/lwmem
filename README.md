@@ -1,5 +1,7 @@
 # Lightweight dynamic memory manager
 
+LwMEM is a lightweight dynamic memory manager optimized for embedded systems.
+
 [Open documentation](https://docs.majerle.eu/projects/lwmem/)
 
 ## Features
