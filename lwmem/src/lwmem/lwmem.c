@@ -63,8 +63,8 @@
 #endif /* LWMEM_CFG_ENABLE_STATS */
 
 /* Verify alignment */
-#if (LWMEM_CFG_ALIGN_NUM & (LWMEM_CFG_ALIGN_NUM - 1) > 0)
-#error "LWMEM_ALIGN_BITS must be power of 2"
+#if ((LWMEM_CFG_ALIGN_NUM & (LWMEM_CFG_ALIGN_NUM - 1)) > 0) || (LWMEM_CFG_ALIGN_NUM == 0)
+#error "LWMEM_CFG_ALIGN_NUM must be power of 2"
 #endif
 
 /**
@@ -106,17 +106,64 @@ static lwmem_t lwmem_default;
  */
 #define LWMEM_TO_BYTE_PTR(p)      ((uint8_t*)(p))
 
+/**
+ * \brief           Bit indicating memory block is allocated
+ *
+ * It is the top-most bit of the `size_t` type, therefore it also sets
+ * the upper limit for any allocation request the application may place
+ */
+#define LWMEM_ALLOC_BIT           ((size_t)((size_t)1 << (sizeof(size_t) * CHAR_BIT - 1)))
+
+/**
+ * \brief           Maximum size of a single allocation request
+ *
+ * Alignment applied on top of the requested size must not reach
+ * the \ref LWMEM_ALLOC_BIT, hence the alignment number is taken off the limit
+ */
+#define LWMEM_MAX_ALLOC_SIZE      (LWMEM_ALLOC_BIT - (size_t)LWMEM_CFG_ALIGN_NUM)
+
+/**
+ * \brief           Verify the allocation request and calculate the number of bytes to allocate
+ *
+ * Function rejects a request that can never be served, before any arithmetic
+ * is applied on top of it by the allocator:
+ *
+ *  - Zero on either of the inputs, there is nothing to allocate
+ *  - Multiplication of the two inputs overflowing the `size_t` type.
+ *    Without the check, a block much smaller than the application asked for
+ *    gets allocated, and later overflown by the application itself
+ *  - Size above the \ref LWMEM_MAX_ALLOC_SIZE. Such a size can never be served,
+ *    and keeping it out also keeps the alignment, and the metadata size added
+ *    on top of it later on, from wrapping the `size_t` around
+ *
+ * Size reported back to the caller is aligned to the \ref LWMEM_CFG_ALIGN_NUM
+ * boundary, ready to be used by the allocator as-is
+ *
+ * \param[in]       size: Size of a single element, in units of bytes
+ * \param[in]       nitems: Number of elements to allocate. Set to `1` for a plain allocation
+ * \param[out]      size_out: Pointer to variable to store the aligned number of bytes to allocate to.
+ *                      Only written to when the function returns `1`
+ * \return          `1` when the request is valid, `0` otherwise
+ */
+static uint8_t
+prv_verify_size(size_t size, size_t nitems, size_t* size_out) {
+    if (size == 0 || nitems == 0 || nitems > (SIZE_MAX / size)) {
+        return 0;
+    }
+    size *= nitems;
+    if (size > LWMEM_MAX_ALLOC_SIZE) {
+        return 0;
+    }
+    *size_out = LWMEM_ALIGN(size);
+    return 1;
+}
+
 #if LWMEM_CFG_FULL
 
 /**
  * \brief           Size of metadata header for block information
  */
 #define LWMEM_BLOCK_META_SIZE  LWMEM_ALIGN(sizeof(lwmem_block_t))
-
-/**
- * \brief           Bit indicating memory block is allocated
- */
-#define LWMEM_ALLOC_BIT        ((size_t)((size_t)1 << (sizeof(size_t) * CHAR_BIT - 1)))
 
 /**
  * \brief           Mark written in `next` field when block is allocated
@@ -362,14 +409,15 @@ static void*
 prv_alloc(lwmem_t* const lwobj, const lwmem_region_t* region, const size_t size) {
     lwmem_block_t *prev, *curr;
     void* retval = NULL;
-
-    /* Calculate final size including meta data size */
-    const size_t final_size = LWMEM_ALIGN(size) + LWMEM_BLOCK_META_SIZE;
+    size_t final_size = 0;
 
     /* Check if initialized and if size is in the limits */
-    if (lwobj->end_block == NULL || final_size == LWMEM_BLOCK_META_SIZE || (final_size & LWMEM_ALLOC_BIT) > 0) {
+    if (lwobj->end_block == NULL || !prv_verify_size(size, 1, &final_size)) {
         return NULL;
     }
+
+    /* Calculate final size including meta data size */
+    final_size += LWMEM_BLOCK_META_SIZE;
 
     /* Set default values */
     prev = &(lwobj->start_block); /* Use pointer from custom lwmem block */
@@ -483,10 +531,9 @@ prv_free(lwmem_t* const lwobj, void* const ptr) {
 static void*
 prv_realloc(lwmem_t* const lwobj, const lwmem_region_t* region, void* const ptr, const size_t size) {
     lwmem_block_t *block = NULL, *prevprev = NULL, *prev = NULL;
-    size_t block_size; /* Holds size of input block (ptr), including metadata size */
-    const size_t final_size = LWMEM_ALIGN(size) + LWMEM_BLOCK_META_SIZE; /* Holds size of new requested block size,
-                                                                            including metadata size */
-    void* retval; /* Return pointer, used with LWMEM_RETURN macro */
+    size_t block_size;     /* Holds size of input block (ptr), including metadata size */
+    size_t final_size = 0; /* Holds size of new requested block size, including metadata size */
+    void* retval;          /* Return pointer, used with LWMEM_RETURN macro */
 
     /* Check optional input parameters */
     if (size == 0) {
@@ -500,9 +547,10 @@ prv_realloc(lwmem_t* const lwobj, const lwmem_region_t* region, void* const ptr,
     }
 
     /* Try to reallocate existing pointer */
-    if ((size & LWMEM_ALLOC_BIT) || (final_size & LWMEM_ALLOC_BIT)) {
+    if (!prv_verify_size(size, 1, &final_size)) {
         return NULL;
     }
+    final_size += LWMEM_BLOCK_META_SIZE;
 
     /* Process existing block */
     block = LWMEM_GET_BLOCK_FROM_PTR(ptr);
@@ -822,7 +870,12 @@ prv_assignmem_simple(lwmem_t* const lwobj, const lwmem_region_t* regions) {
 static void*
 prv_alloc_simple(lwmem_t* const lwobj, const lwmem_region_t* region, const size_t size) {
     void* retval = NULL;
-    const size_t alloc_size = LWMEM_ALIGN(size);
+    size_t alloc_size = 0;
+
+    /* Check if size is in the limits */
+    if (!prv_verify_size(size, 1, &alloc_size)) {
+        return NULL;
+    }
 
     if (alloc_size <= lwobj->mem_available_bytes) {
         retval = lwobj->mem_next_available_ptr;
@@ -971,8 +1024,12 @@ lwmem_malloc_ex(lwmem_t* lwobj, const lwmem_region_t* region, const size_t size)
 void*
 lwmem_calloc_ex(lwmem_t* lwobj, const lwmem_region_t* region, const size_t nitems, const size_t size) {
     void* ptr = NULL;
-    const size_t alloc_size = size * nitems;
+    size_t alloc_size = 0;
 
+    /* Check inputs and calculate the total number of bytes to allocate */
+    if (!prv_verify_size(size, nitems, &alloc_size)) {
+        return NULL;
+    }
     lwobj = LWMEM_GET_LWOBJ(lwobj);
 
     LWMEM_PROTECT(lwobj);
