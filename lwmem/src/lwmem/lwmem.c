@@ -151,6 +151,8 @@ prv_verify_size(size_t size, size_t nitems, size_t* size_out) {
         return 0;
     }
     size *= nitems;
+
+    /* Check against keeping the space for header option */
     if (size > LWMEM_MAX_ALLOC_SIZE) {
         return 0;
     }
